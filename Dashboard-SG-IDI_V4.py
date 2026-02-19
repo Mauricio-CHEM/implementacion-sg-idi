@@ -332,7 +332,7 @@ with st.sidebar:
         st.markdown('<img src="' + lb + '" style="width:100%;border-radius:8px;margin-bottom:10px">',
                     unsafe_allow_html=True)
     st.markdown('## Seguimiento de implementación sistema de gestión de la investigación')
-    st.markdown('**Laboratorio Nacional de Insumo Agrícolas - LANIA - Área IIAD**')
+    st.markdown('### Laboratorio Nacional de Insumo Agrícolas - LANIA - Área IIAD')
     st.markdown('*basado en las normas NTC 5801 / ISO 56002*')
     if GH_ON and not st.session_state.gh_loaded:
         st.session_state.gh_loaded = True
