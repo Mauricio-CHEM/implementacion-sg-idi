@@ -291,8 +291,8 @@ with st.sidebar:
         st.markdown(f'<img src="{logo_b64}" style="width:100%;border-radius:8px;margin-bottom:10px">',
                     unsafe_allow_html=True)
     st.markdown("## SGI I+D+I")
-    st.markdown("**Laboratorio IIAD**")
-    st.markdown("*NTC 5801 / ISO 56002*")
+    st.markdown("**Laboratorio Nacional de Insumos Agrícolas - LANIA - Área IIAD**")
+    st.markdown("*Implementación NTC 5801 / ISO 56002*")
     st.markdown("---")
     page = st.radio("", [
         "Dashboard","Fase 1 - Fundamentos","Fase 2 - Apoyo Estrategico",
@@ -328,8 +328,8 @@ with st.sidebar:
 
 # ---- PAGE: DASHBOARD ----
 if page == "Dashboard":
-    st.title("Sistema de Gestion I+D+I")
-    st.markdown(f"**Laboratorio IIAD** | NTC 5801 / ISO 56002 | *{datetime.now().strftime('%d/%m/%Y')}*")
+    st.title("Seguimiento de implementación del sistema de Gestión I+D+I")
+    st.markdown(f"**Área de Investigación e Innovación Analítica y Diagnóstica (IIAD)** | NTC 5801 / ISO 56002 | *{datetime.now().strftime('%d/%m/%Y')}*")
     st.divider()
     total_all,done_all,appl_all,pct_all=overall_progress()
     tot_docs,done_docs,pct_docs=doc_progress()
