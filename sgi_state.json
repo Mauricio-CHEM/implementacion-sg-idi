@@ -1,0 +1,4 @@
+echo "{}" > sgi_state.json
+git add sgi_state.json
+git commit -m "chore: inicializar estado SGI"
+git push origin main
