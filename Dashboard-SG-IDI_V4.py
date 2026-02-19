@@ -675,7 +675,7 @@ elif page == "Configuracion":
         st.caption(f"SHA: {(st.session_state.gh_sha or 'no cargado')[:7]} | {st.session_state.get('gh_source','local')}")
     else:
         st.warning("GitHub Sync no configurado.")
-        st.code("GITHUB_TOKEN     = 'ghp_xxxx'
+        st.code("GITHUB_TOKEN     = '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'
 GITHUB_REPO      = 'usuario/repo'
 GITHUB_FILE_PATH = 'sgi_state.json'
 GITHUB_BRANCH    = 'main'",language="toml")
