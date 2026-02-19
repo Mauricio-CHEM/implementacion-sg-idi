@@ -331,9 +331,9 @@ with st.sidebar:
     if lb:
         st.markdown('<img src="' + lb + '" style="width:100%;border-radius:8px;margin-bottom:10px">',
                     unsafe_allow_html=True)
-    st.markdown('## SGI I+D+I')
-    st.markdown('**Laboratorio IIAD**')
-    st.markdown('*NTC 5801 / ISO 56002*')
+    st.markdown('## Seguimiento de implementación sistema de gestión de la investigación')
+    st.markdown('**Laboratorio Nacional de Insumo Agrícolas - LANIA - Área IIAD**')
+    st.markdown('*basado en las normas NTC 5801 / ISO 56002*')
     if GH_ON and not st.session_state.gh_loaded:
         st.session_state.gh_loaded = True
         with st.spinner('Sincronizando...'):
@@ -392,8 +392,8 @@ with st.sidebar:
             except Exception as e: st.error(str(e))
 
 if page == 'Dashboard':
-    st.title('Sistema de Gestion I+D+I - IIAD')
-    st.markdown('**Laboratorio IIAD** | NTC 5801 / ISO 56002 | ' + datetime.now().strftime('%d/%m/%Y'))
+    st.title('Sistema de Gestion I+D+I - Área de Investigación e Innovación Analítica y Diagnóstica')
+    st.markdown('**Laboratorio LANIA* | NTC 5801 / ISO 56002 | ' + datetime.now().strftime('%d/%m/%Y'))
     if GH_ON:
         src = st.session_state.get('gh_source','local')
         sha_s = (st.session_state.gh_sha or '')[:7]
