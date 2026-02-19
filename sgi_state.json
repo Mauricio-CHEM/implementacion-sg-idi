@@ -1,1 +1,10 @@
-{}
+{
+  "chk_Fase 1_1.2": {
+    "status": "Pendiente",
+    "fecha_inicio": "2026-02-24",
+    "fecha_fin": "2026-02-24",
+    "responsable_nombre": "Iván Mauricio Huérfano",
+    "rol": "",
+    "comentario": "Se programa entrenamiento en las normas NTC 5801 e ISO 56002 durante la reunión inicial del área IIAD del 24 de febrero"
+  }
+}
