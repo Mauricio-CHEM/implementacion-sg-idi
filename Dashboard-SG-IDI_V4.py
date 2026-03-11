@@ -6,7 +6,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import json, os, base64
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 try:
     import requests
@@ -54,6 +54,7 @@ def gh_save(state, sha=None):
 PHASES = {
     'Fase 1': {
         'name': 'Fundamentos y Diagnostico', 'months': 'Meses 1-3',
+        'month_start': 1, 'month_end': 3,
         'chapters': 'Cap. 4-5 NTC 5801', 'color': '#1565C0',
         'hito': 'Politica de I+D+I aprobada',
         'items': [
@@ -79,6 +80,7 @@ PHASES = {
     },
     'Fase 2': {
         'name': 'Doc Estrategica y Apoyo', 'months': 'Meses 4-6',
+        'month_start': 4, 'month_end': 6,
         'chapters': 'Cap. 6-7 NTC 5801', 'color': '#2E7D32',
         'hito': 'Sistema documental base aprobado',
         'items': [
@@ -109,6 +111,7 @@ PHASES = {
     },
     'Fase 3': {
         'name': 'Doc Operativa e Implementacion', 'months': 'Meses 7-9',
+        'month_start': 7, 'month_end': 9,
         'chapters': 'Cap. 8 NTC 5801', 'color': '#E65100',
         'hito': 'Proyecto piloto en ejecucion',
         'items': [
@@ -132,6 +135,7 @@ PHASES = {
     },
     'Fase 4': {
         'name': 'Evaluacion Auditoria y Mejora', 'months': 'Meses 10-12',
+        'month_start': 10, 'month_end': 12,
         'chapters': 'Cap. 9-10 NTC 5801', 'color': '#6A1B9A',
         'hito': 'Primera auditoria interna realizada',
         'items': [
@@ -241,9 +245,46 @@ STATE_FILE     = 'sgi_state.json'
 PHASE_PAGES    = {'Fase 1 - Fundamentos': 'Fase 1', 'Fase 2 - Apoyo Estrategico': 'Fase 2',
                   'Fase 3 - Operacion': 'Fase 3', 'Fase 4 - Evaluacion y Mejora': 'Fase 4'}
 MES_HITO       = {'Fase 1':'Mes 3','Fase 2':'Mes 6','Fase 3':'Mes 9','Fase 4':'Mes 12'}
-
 DOC_TYPES = ['Procedimiento','Manual','Registro','Plan','Declaracion formal','Instrumento',
              'Informe','Catalogo','Organigrama','Base de datos','Formato estandar','Otro']
+
+# ---- Helpers: fecha de inicio del proyecto ----
+def get_start_date():
+    raw = st.session_state.state.get('project_start_date', '')
+    if raw:
+        try: return date.fromisoformat(raw)
+        except: pass
+    return None
+
+def mes_to_date(mes_str, start):
+    """Convierte 'Mes N' a fecha real dado el start del proyecto."""
+    try:
+        n = int(mes_str.replace('Mes ', '').strip())
+        return start + timedelta(days=30 * n)
+    except:
+        return None
+
+def get_delayed_items():
+    """Devuelve lista de items atrasados (plazo vencido y no Completo/No aplica)."""
+    start = get_start_date()
+    if not start: return []
+    today = date.today()
+    delayed = []
+    for pk, ph in PHASES.items():
+        for item in ph['items']:
+            k   = ikey(pk, item['id'])
+            ist = get_istate(k)
+            if ist['status'] in ('Completo', 'No aplica'): continue
+            deadline_date = mes_to_date(item['deadline'], start)
+            if deadline_date and today > deadline_date:
+                days_late = (today - deadline_date).days
+                delayed.append({
+                    'fase': pk, 'id': item['id'], 'activity': item['activity'],
+                    'ref': item['ref'], 'deadline': item['deadline'],
+                    'deadline_date': deadline_date, 'days_late': days_late,
+                    'status': ist['status'], 'responsible': item['responsible'],
+                })
+    return sorted(delayed, key=lambda x: x['days_late'], reverse=True)
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -291,7 +332,6 @@ def set_doc_status(code, status):
     st.session_state.state[dkey(code)] = v
     save_state(st.session_state.state)
 
-# --- Documentos y formatos adicionales (almacenados en JSON) ---
 def get_extra_docs():
     return st.session_state.state.get('extra_documents', [])
 
@@ -354,6 +394,32 @@ def doc_progress():
     done  = sum(1 for d in all_d if get_doc_status(d['code']) == 'Completo')
     return tot, done, (round(done / tot * 100) if tot > 0 else 0)
 
+# ---- Gantt builder ----
+def build_gantt_df(start_date):
+    rows = []
+    for pk, ph in PHASES.items():
+        # Barra de fase completa
+        fs = start_date + timedelta(days=30 * (ph['month_start'] - 1))
+        fe = start_date + timedelta(days=30 * ph['month_end'])
+        _,done,wip,na,pct = phase_progress(pk)
+        rows.append({'Tarea': pk + ': ' + ph['name'], 'Inicio': fs, 'Fin': fe,
+                     'Fase': pk, 'Tipo': 'Fase', 'Avance': str(pct)+'%',
+                     'Estado': 'Completo' if pct==100 else ('En proceso' if done+wip>0 else 'Pendiente')})
+        # Barras por actividad
+        for item in ph['items']:
+            n = int(item['deadline'].replace('Mes ', ''))
+            act_start = start_date + timedelta(days=30 * (n - 1))
+            act_end   = start_date + timedelta(days=30 * n)
+            ist = get_istate(ikey(pk, item['id']))
+            rows.append({'Tarea': item['id'] + ': ' + item['activity'][:50],
+                         'Inicio': act_start, 'Fin': act_end,
+                         'Fase': pk, 'Tipo': 'Actividad',
+                         'Avance': item['deadline'], 'Estado': ist['status']})
+    return pd.DataFrame(rows)
+
+COLOR_STATUS = {'Completo':'#43A047','En proceso':'#1E88E5','Pendiente':'#B0BEC5',
+                'No aplica':'#FF7043','Atrasado':'#E53935'}
+
 st.markdown('''<style>
 [data-testid="stSidebar"]{background-color:#0D1B2A}
 [data-testid="stSidebar"] *{color:#E8EDF3!important}
@@ -364,6 +430,10 @@ st.markdown('''<style>
 .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:.74rem;font-weight:600}
 .extra-badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:.70rem;
              font-weight:600;background:#FFF3E0;color:#E65100;border:1px solid #FFCC02}
+.alert-row{background:#FFF8E1;border-left:4px solid #F9A825;border-radius:6px;
+           padding:8px 12px;margin-bottom:6px;font-size:.83rem}
+.late-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.72rem;
+            font-weight:700;background:#FFEBEE;color:#C62828;border:1px solid #EF9A9A}
 </style>''', unsafe_allow_html=True)
 
 with st.sidebar:
@@ -394,6 +464,7 @@ with st.sidebar:
     st.markdown('---')
     page = st.radio('', ['Dashboard','Fase 1 - Fundamentos','Fase 2 - Apoyo Estrategico',
                           'Fase 3 - Operacion','Fase 4 - Evaluacion y Mejora',
+                          'Linea de Tiempo','Alertas de Atraso',
                           'Registro Documental','Reportes y Exportar','Configuracion'],
                      label_visibility='collapsed')
     st.markdown('---')
@@ -401,6 +472,12 @@ with st.sidebar:
     st.markdown('### Avance: **' + str(pct_all) + '%**')
     st.progress(pct_all / 100)
     st.caption(str(done_all) + ' de ' + str(appl_all) + ' completadas')
+    # Mini alerta en sidebar si hay atrasados
+    delayed = get_delayed_items()
+    if delayed:
+        st.markdown('<div style="background:#FFEBEE;border-radius:8px;padding:8px 10px;margin-top:6px">'
+                    '<span style="color:#C62828;font-weight:700">⚠️ '+str(len(delayed))+' actividades atrasadas</span>'
+                    '</div>', unsafe_allow_html=True)
     st.markdown('---')
     if GH_ON:
         st.markdown('##### Sync GitHub')
@@ -431,6 +508,9 @@ with st.sidebar:
                 save_state(loaded); st.rerun()
             except Exception as e: st.error(str(e))
 
+# ============================================================
+# DASHBOARD
+# ============================================================
 if page == 'Dashboard':
     st.title('Sistema de Gestion I+D+I - Área de Investigación e Innovación (IIAD)')
     st.markdown('**Laboratorio LANIA** | NTC 5801 / ISO 56002 | ' + datetime.now().strftime('%d/%m/%Y'))
@@ -439,11 +519,19 @@ if page == 'Dashboard':
         sha_s = (st.session_state.gh_sha or '')[:7]
         if src == 'github': st.info('Sincronizado con GitHub  SHA: ' + sha_s)
         else: st.warning('Estado local. Presiona Guardar para sincronizar.')
+    # Banner de alertas
+    delayed = get_delayed_items()
+    if delayed:
+        st.error(f'⚠️ **{len(delayed)} actividades atrasadas** detectadas. '
+                 'Ve a **Alertas de Atraso** para el detalle completo.')
+    elif get_start_date():
+        st.success('✅ Sin actividades atrasadas a la fecha.')
+    else:
+        st.info('ℹ️ Configura la **fecha de inicio del proyecto** en Configuración para activar alertas de atraso.')
     st.divider()
     _, done_all, appl_all, pct_all = overall_progress()
     tot_docs, done_docs, pct_docs  = doc_progress()
     phases_done = sum(1 for pk in PHASES if phase_progress(pk)[4] == 100)
-    wip_all     = sum(phase_progress(pk)[2] for pk in PHASES)
     extra_count = len(get_extra_docs()) + len(get_extra_fmts())
     k1,k2,k3,k4 = st.columns(4)
     k1.metric('Avance General', str(pct_all)+'%', str(done_all)+'/'+str(appl_all)+' actividades')
@@ -457,6 +545,11 @@ if page == 'Dashboard':
         ph = PHASES[pk]
         total,done,wip,na,pct = phase_progress(pk)
         pend = total-done-wip-na
+        # Calcular atrasados de esta fase
+        n_late = sum(1 for d in delayed if d['fase'] == pk)
+        late_html = (''
+            if not n_late else
+            '<div class="late-badge" style="margin-top:6px">⚠️ '+str(n_late)+' atrasada(s)</div>')
         card = ('<div class="kcard" style="border-left-color:'+ph['color']+'">'
                 '<div style="font-weight:700">'+pk+'</div>'
                 '<div style="font-size:.8rem;color:#777">'+ph['name']+'</div>'
@@ -464,7 +557,7 @@ if page == 'Dashboard':
                 '<div style="font-size:.8rem;color:#777">'+ph['months']+'</div>'
                 '<div style="margin-top:8px;font-size:.82rem">'
                 'OK '+str(done)+' | ~ '+str(wip)+' | P '+str(pend)+' | N/A '+str(na)
-                +'</div></div>')
+                +'</div>'+late_html+'</div>')
         with cols[i]: st.markdown(card, unsafe_allow_html=True); st.progress(pct/100)
     st.divider()
     c1,c2 = st.columns(2)
@@ -494,7 +587,7 @@ if page == 'Dashboard':
     mc = st.columns(4)
     for i,pk in enumerate(PHASES):
         ph=PHASES[pk]; _,done,_,_,pct=phase_progress(pk)
-        ico='OK' if pct==100 else ('~' if done>0 else '...')
+        ico='✅' if pct==100 else ('⏳' if done>0 else '…')
         hito=('<div style="background:'+ph['color']+'12;border:1px solid '+ph['color']+'40;'
               'border-radius:10px;padding:14px;text-align:center">'
               '<div style="color:'+ph['color']+';font-weight:700">'+MES_HITO[pk]+'</div>'
@@ -502,6 +595,9 @@ if page == 'Dashboard':
               '<div style="font-size:.8rem;color:#444">'+ph['hito']+'</div></div>')
         with mc[i]: st.markdown(hito,unsafe_allow_html=True)
 
+# ============================================================
+# FASES
+# ============================================================
 elif page in PHASE_PAGES:
     pk=PHASE_PAGES[page]; ph=PHASES[pk]
     total,done,wip,na,pct=phase_progress(pk)
@@ -511,7 +607,20 @@ elif page in PHASE_PAGES:
     kc=st.columns(5)
     kc[0].metric('Avance',str(pct)+'%'); kc[1].metric('Completas',done)
     kc[2].metric('En proceso',wip); kc[3].metric('Pendientes',total-done-wip-na); kc[4].metric('No aplica',na)
-    st.progress(pct/100); st.divider()
+    st.progress(pct/100)
+    # Mini-panel alertas de esta fase
+    delayed_fase = [d for d in get_delayed_items() if d['fase'] == pk]
+    if delayed_fase:
+        with st.expander(f'⚠️ {len(delayed_fase)} actividad(es) atrasada(s) en esta fase', expanded=True):
+            for d in delayed_fase:
+                st.markdown(
+                    f'<div class="alert-row">'
+                    f'<b>{d["id"]}</b> &nbsp;|&nbsp; {d["activity"]}<br>'
+                    f'Plazo: <b>{d["deadline"]}</b> ({d["deadline_date"].strftime("%d/%m/%Y")}) &nbsp;'
+                    f'<span class="late-badge">{d["days_late"]} días de atraso</span> &nbsp;'
+                    f'Estado actual: <i>{d["status"]}</i> &nbsp;| Responsable: {d["responsible"]}'
+                    f'</div>', unsafe_allow_html=True)
+    st.divider()
     fc1,fc2,fc3=st.columns(3)
     with fc1: f_st=st.multiselect('Estado:',STATUS_OPTIONS,default=STATUS_OPTIONS,key='fs_'+pk)
     with fc2: f_tx=st.text_input('Buscar:',key='ft_'+pk)
@@ -519,15 +628,17 @@ elif page in PHASE_PAGES:
         resps=sorted(set(i['responsible'] for i in ph['items']))
         f_rp=st.multiselect('Responsable:',resps,default=resps,key='fr_'+pk)
     st.divider()
-    hdr=st.columns([0.4,0.6,4.2,0.9,1.6])
-    for col,lbl in zip(hdr,['**#**','**Ref.**','**Actividad**','**Plazo**','**Estado**']): col.markdown(lbl)
+    hdr=st.columns([0.4,0.6,4.0,0.9,1.6,0.5])
+    for col,lbl in zip(hdr,['**#**','**Ref.**','**Actividad**','**Plazo**','**Estado**','']): col.markdown(lbl)
     st.markdown('<hr style="margin:4px 0">',unsafe_allow_html=True)
+    delayed_ids = {d['id'] for d in delayed_fase}
     for item in ph['items']:
         k=ikey(pk,item['id']); ist=get_istate(k); cur=ist['status']
         if cur not in f_st: continue
         if f_tx and f_tx.lower() not in item['activity'].lower(): continue
         if item['responsible'] not in f_rp: continue
-        row=st.columns([0.4,0.6,4.2,0.9,1.6])
+        is_late = item['id'] in delayed_ids
+        row=st.columns([0.4,0.6,4.0,0.9,1.6,0.5])
         row[0].markdown('**'+item['id']+'**')
         row[1].markdown('`'+item['ref']+'`')
         badges=''
@@ -539,6 +650,7 @@ elif page in PHASE_PAGES:
         new_st=row[4].selectbox('',STATUS_OPTIONS,index=STATUS_OPTIONS.index(cur),
                                  key='sel_'+pk+'_'+item['id'],label_visibility='collapsed')
         if new_st!=cur: ist['status']=new_st; save_istate(k,ist); st.rerun()
+        row[5].markdown('<span title="Atrasado">⚠️</span>' if is_late else '', unsafe_allow_html=True)
         with st.expander('Detalles  '+item['id']+': '+item['activity'][:55]):
             d1,d2,d3,d4=st.columns(4)
             try:    fi_v=date.fromisoformat(ist['fecha_inicio']) if ist['fecha_inicio'] else None
@@ -553,6 +665,9 @@ elif page in PHASE_PAGES:
             if ist['comentario'] and ist['comentario'].startswith('http'):
                 st.markdown('<a href="'+ist['comentario']+'" target="_blank">Ver evidencia</a>',unsafe_allow_html=True)
             st.caption('Evidencia esperada: '+item['evidence'])
+            if is_late:
+                late_info = next((d for d in delayed_fase if d['id']==item['id']),None)
+                if late_info: st.warning(f'⚠️ Esta actividad lleva **{late_info["days_late"]} días de atraso** (plazo: {late_info["deadline_date"].strftime("%d/%m/%Y")})')
             if st.button('Guardar',key='sv_'+pk+'_'+item['id'],type='primary'):
                 save_istate(k,{'status':cur,'fecha_inicio':str(new_fi) if new_fi else '',
                     'fecha_fin':str(new_ff) if new_ff else '','responsable_nombre':new_resp,
@@ -560,6 +675,126 @@ elif page in PHASE_PAGES:
                 st.success('Guardado.')
         st.markdown('<hr style="margin:3px 0;opacity:.2">',unsafe_allow_html=True)
 
+# ============================================================
+# LINEA DE TIEMPO (GANTT)
+# ============================================================
+elif page == 'Linea de Tiempo':
+    st.title('Linea de Tiempo — Gantt de Implementacion')
+    start = get_start_date()
+    if not start:
+        st.warning('ℹ️ Para ver el Gantt, primero configura la **fecha de inicio del proyecto** en la página **Configuración**.')
+        st.stop()
+    st.markdown(f'Inicio del proyecto: **{start.strftime("%d/%m/%Y")}** | '
+                f'Fin estimado: **{(start + timedelta(days=30*12)).strftime("%d/%m/%Y")}**')
+    st.divider()
+    view = st.radio('Vista:', ['Por Fase', 'Actividades detalladas'], horizontal=True)
+    filter_phase = st.multiselect('Filtrar fases:', list(PHASES.keys()), default=list(PHASES.keys()))
+    st.divider()
+    df_gantt = build_gantt_df(start)
+    df_gantt = df_gantt[df_gantt['Fase'].isin(filter_phase)]
+    today_line = date.today()
+    if view == 'Por Fase':
+        df_plot = df_gantt[df_gantt['Tipo'] == 'Fase'].copy()
+    else:
+        df_plot = df_gantt[df_gantt['Tipo'] == 'Actividad'].copy()
+    # Marcar atrasados
+    delayed_ids_all = {(d['fase'], d['id']) for d in get_delayed_items()}
+    def estado_color(row):
+        if row['Tipo'] == 'Actividad':
+            iid = row['Tarea'].split(':')[0].strip()
+            if (row['Fase'], iid) in delayed_ids_all and row['Estado'] not in ('Completo','No aplica'):
+                return 'Atrasado'
+        return row['Estado']
+    df_plot['Estado_color'] = df_plot.apply(estado_color, axis=1)
+    color_map = {'Completo':'#43A047','En proceso':'#1E88E5','Pendiente':'#90A4AE',
+                 'No aplica':'#FF7043','Atrasado':'#E53935'}
+    fig_g = px.timeline(
+        df_plot, x_start='Inicio', x_end='Fin', y='Tarea',
+        color='Estado_color', color_discrete_map=color_map,
+        hover_data=['Fase','Avance','Estado'],
+        height=max(400, len(df_plot) * 28)
+    )
+    fig_g.add_vline(x=str(today_line), line_dash='dash', line_color='#F44336',
+                    annotation_text='Hoy', annotation_position='top right',
+                    annotation_font_color='#F44336')
+    fig_g.update_yaxes(autorange='reversed')
+    fig_g.update_layout(
+        plot_bgcolor='white', paper_bgcolor='white',
+        legend=dict(orientation='h', y=-0.08),
+        margin=dict(l=10, r=10, t=30, b=10),
+        xaxis_title='', yaxis_title=''
+    )
+    st.plotly_chart(fig_g, use_container_width=True)
+    st.caption('La línea roja vertical indica la fecha de hoy. Las barras rojas indican actividades atrasadas.')
+
+# ============================================================
+# ALERTAS DE ATRASO
+# ============================================================
+elif page == 'Alertas de Atraso':
+    st.title('Alertas de Atraso')
+    start = get_start_date()
+    if not start:
+        st.warning('ℹ️ Para usar las alertas, configura la **fecha de inicio del proyecto** en **Configuración**.')
+        st.stop()
+    st.markdown(f'Fecha de inicio configurada: **{start.strftime("%d/%m/%Y")}** | Hoy: **{date.today().strftime("%d/%m/%Y")}**')
+    delayed = get_delayed_items()
+    st.divider()
+    if not delayed:
+        st.success('✅ ¡Excelente! No hay actividades atrasadas a la fecha. El proyecto va al día.')
+    else:
+        st.error(f'⚠️ Se detectaron **{len(delayed)} actividades atrasadas** que requieren atención.')
+        # Resumen por fase
+        st.markdown('### Resumen por fase')
+        fase_counts = {}
+        for d in delayed:
+            fase_counts[d['fase']] = fase_counts.get(d['fase'], 0) + 1
+        cols_f = st.columns(len(fase_counts))
+        for i, (fk, cnt) in enumerate(fase_counts.items()):
+            color = PHASES[fk]['color']
+            with cols_f[i]:
+                st.markdown(f'<div class="kcard" style="border-left-color:{color};text-align:center">'
+                            f'<div style="font-weight:700">{fk}</div>'
+                            f'<div style="font-size:1.8rem;font-weight:800;color:{color}">{cnt}</div>'
+                            f'<div style="font-size:.8rem;color:#777">atrasada(s)</div></div>',
+                            unsafe_allow_html=True)
+        st.divider()
+        # Filtros
+        c1f, c2f = st.columns(2)
+        f_fase = c1f.multiselect('Filtrar por fase:', list(PHASES.keys()), default=list(PHASES.keys()), key='al_fase')
+        umbral = c2f.slider('Mostrar con mas de N dias de atraso:', 0, 90, 0, key='al_umbral')
+        filtered = [d for d in delayed if d['fase'] in f_fase and d['days_late'] >= umbral]
+        st.markdown(f'### Detalle ({len(filtered)} actividades)')
+        for d in filtered:
+            color = PHASES[d['fase']]['color']
+            urgency = '🔴 Critico' if d['days_late'] > 14 else ('🟡 Moderado' if d['days_late'] > 7 else '🟢 Leve')
+            st.markdown(
+                f'<div class="alert-row" style="border-left-color:{color}">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center">'
+                f'<span><b>{d["fase"]} &nbsp;|&nbsp; {d["id"]}</b> &mdash; {d["activity"]}</span>'
+                f'<span class="late-badge">{d["days_late"]} días</span></div>'
+                f'<div style="margin-top:4px;color:#555">'
+                f'Ref: <code>{d["ref"]}</code> &nbsp;|&nbsp; '
+                f'Plazo: <b>{d["deadline"]}</b> ({d["deadline_date"].strftime("%d/%m/%Y")}) &nbsp;|&nbsp; '
+                f'Estado: <i>{d["status"]}</i> &nbsp;|&nbsp; '
+                f'Responsable: {d["responsible"]} &nbsp;|&nbsp; {urgency}'
+                f'</div></div>', unsafe_allow_html=True)
+        st.divider()
+        # Exportar
+        df_late = pd.DataFrame([{
+            'Fase': d['fase'], 'ID': d['id'], 'Actividad': d['activity'],
+            'Ref NTC': d['ref'], 'Plazo': d['deadline'],
+            'Fecha limite': d['deadline_date'].strftime('%d/%m/%Y'),
+            'Dias de atraso': d['days_late'], 'Estado actual': d['status'],
+            'Responsable': d['responsible']
+        } for d in delayed])
+        st.download_button('Descargar informe de atraso (CSV)',
+            data=df_late.to_csv(index=False).encode(),
+            file_name='SGI_Alertas_'+datetime.now().strftime('%Y%m%d')+'.csv',
+            mime='text/csv', use_container_width=True)
+
+# ============================================================
+# REGISTRO DOCUMENTAL
+# ============================================================
 elif page == 'Registro Documental':
     extra_docs = get_extra_docs()
     extra_fmts = get_extra_fmts()
@@ -570,12 +805,10 @@ elif page == 'Registro Documental':
                 f'*(incluye {len(extra_docs)} doc. y {len(extra_fmts)} form. adicionales)*')
     edit_codes = st.checkbox('Editar codigos SGC', value=False)
     st.divider()
-
     tab_labels = [f'Documentos Base ({n_docs})', f'Formatos ({n_fmts})', 'Agregar Documento', 'Agregar Formato']
     t1, t2, t3, t4 = st.tabs(tab_labels)
 
-    # ---- helper para renderizar lista de documentos ----
-    def render_doc_list(tab, items_list, tid, is_extra=False):
+    def render_doc_list(tab, items_list, tid):
         with tab:
             pf = st.multiselect('Fase:', ['Fase 1','Fase 2','Fase 3','Fase 4'],
                                 default=['Fase 1','Fase 2','Fase 3','Fase 4'], key='df_'+tid)
@@ -611,7 +844,6 @@ elif page == 'Registro Documental':
                 st.markdown('<hr style="margin:3px 0;opacity:.18">', unsafe_allow_html=True)
 
     render_doc_list(t1, all_docs(), 'docs')
-
     with t2:
         pf2 = st.multiselect('Fase:', ['Fase 1','Fase 2','Fase 3','Fase 4'],
                              default=['Fase 1','Fase 2','Fase 3','Fase 4'], key='df_fmts')
@@ -643,8 +875,6 @@ elif page == 'Registro Documental':
             else:
                 row2[4].markdown('')
             st.markdown('<hr style="margin:3px 0;opacity:.18">', unsafe_allow_html=True)
-
-    # ---- Tab Agregar Documento ----
     with t3:
         st.markdown('### Agregar documento adicional al SGI')
         st.caption('Los documentos agregados aquí se guardan en el JSON del sistema y se muestran '
@@ -656,31 +886,24 @@ elif page == 'Registro Documental':
             new_phase = fa2.selectbox('Fase de implementación *', ['Fase 1','Fase 2','Fase 3','Fase 4'])
             new_name  = st.text_input('Nombre del documento *', placeholder='Ej: Protocolo gestión de muestras')
             fb1, fb2 = st.columns(2)
-            new_chap  = fb1.text_input('Referencia normativa', placeholder='Ej: S7.5  /  S8.1  /  ISO17034-S5')
+            new_chap  = fb1.text_input('Referencia normativa', placeholder='Ej: S7.5 / S8.1 / ISO17034-S5')
             new_type  = fb2.selectbox('Tipo de documento', DOC_TYPES)
-            new_obs   = st.text_area('Justificación / Observación', height=70,
-                                     placeholder='Ej: Requerido por ISO 17034 para trazabilidad de materiales de referencia')
+            new_obs   = st.text_area('Justificación / Observación', height=70)
             submitted = st.form_submit_button('Agregar documento', type='primary', use_container_width=True)
             if submitted:
                 code_clean = new_code.strip().upper()
                 if not code_clean or not new_name.strip():
                     st.error('El código y el nombre son obligatorios.')
                 elif code_exists(code_clean):
-                    st.error(f'El código **{code_clean}** ya existe en el sistema. Usa uno diferente.')
+                    st.error(f'El código **{code_clean}** ya existe.')
                 else:
-                    entry = {'code': code_clean, 'name': new_name.strip(), 'phase': new_phase,
-                             'chapter': new_chap.strip(), 'type': new_type,
-                             'obs': new_obs.strip(), 'extra': True,
-                             'added': datetime.now().strftime('%Y-%m-%d %H:%M')}
-                    add_extra_doc(entry)
-                    st.success(f'✅ Documento **{code_clean}** agregado correctamente a {new_phase}.')
-                    st.rerun()
-
-    # ---- Tab Agregar Formato ----
+                    add_extra_doc({'code':code_clean,'name':new_name.strip(),'phase':new_phase,
+                                   'chapter':new_chap.strip(),'type':new_type,'obs':new_obs.strip(),
+                                   'extra':True,'added':datetime.now().strftime('%Y-%m-%d %H:%M')})
+                    st.success(f'✅ Documento **{code_clean}** agregado a {new_phase}.'); st.rerun()
     with t4:
         st.markdown('### Agregar formato operativo adicional')
-        st.caption('Los formatos agregados aquí se guardan en el JSON del sistema y se muestran '
-                   'en la lista de formatos marcados con la etiqueta **+extra**.')
+        st.caption('Los formatos agregados aquí se guardan en el JSON del sistema.')
         st.divider()
         with st.form('form_add_fmt', clear_on_submit=True):
             fc1, fc2 = st.columns(2)
@@ -688,26 +911,25 @@ elif page == 'Registro Documental':
             new_fphase= fc2.selectbox('Fase de implementación *', ['Fase 1','Fase 2','Fase 3','Fase 4'])
             new_fname = st.text_input('Nombre del formato *', placeholder='Ej: Registro cadena de custodia')
             fd1, fd2 = st.columns(2)
-            new_fchap = fd1.text_input('Referencia normativa', placeholder='Ej: S7.5  /  ISO17043-S5')
+            new_fchap = fd1.text_input('Referencia normativa', placeholder='Ej: S7.5 / ISO17043-S5')
             new_ftype = fd2.selectbox('Tipo', ['Formato','Plantilla','Registro','Acta','Ficha','Protocolo','Otro'])
-            new_fobs  = st.text_area('Justificación / Observación', height=70,
-                                     placeholder='Ej: Requerido por ISO 17043 para control de muestras de ensayo')
+            new_fobs  = st.text_area('Justificación / Observación', height=70)
             fsubmitted = st.form_submit_button('Agregar formato', type='primary', use_container_width=True)
             if fsubmitted:
                 fcode_clean = new_fcode.strip().upper()
                 if not fcode_clean or not new_fname.strip():
                     st.error('El código y el nombre son obligatorios.')
                 elif code_exists(fcode_clean):
-                    st.error(f'El código **{fcode_clean}** ya existe en el sistema. Usa uno diferente.')
+                    st.error(f'El código **{fcode_clean}** ya existe.')
                 else:
-                    fentry = {'code': fcode_clean, 'name': new_fname.strip(), 'phase': new_fphase,
-                              'chapter': new_fchap.strip(), 'type': new_ftype,
-                              'obs': new_fobs.strip(), 'extra': True,
-                              'added': datetime.now().strftime('%Y-%m-%d %H:%M')}
-                    add_extra_fmt(fentry)
-                    st.success(f'✅ Formato **{fcode_clean}** agregado correctamente a {new_fphase}.')
-                    st.rerun()
+                    add_extra_fmt({'code':fcode_clean,'name':new_fname.strip(),'phase':new_fphase,
+                                   'chapter':new_fchap.strip(),'type':new_ftype,'obs':new_fobs.strip(),
+                                   'extra':True,'added':datetime.now().strftime('%Y-%m-%d %H:%M')})
+                    st.success(f'✅ Formato **{fcode_clean}** agregado a {new_fphase}.'); st.rerun()
 
+# ============================================================
+# REPORTES Y EXPORTAR
+# ============================================================
 elif page == 'Reportes y Exportar':
     st.title('Reportes de Avance'); st.divider()
     rows=[]
@@ -722,8 +944,10 @@ elif page == 'Reportes y Exportar':
     summary=[]
     for pk in PHASES:
         total,done,wip,na,pct=phase_progress(pk)
+        n_late_f = sum(1 for d in get_delayed_items() if d['fase']==pk)
         summary.append({'Fase':pk+': '+PHASES[pk]['name'],'Total':total,'Completas':done,
-                         'En proceso':wip,'Pendientes':total-done-wip-na,'N/A':na,'% Avance':str(pct)+'%'})
+                         'En proceso':wip,'Pendientes':total-done-wip-na,'N/A':na,
+                         '% Avance':str(pct)+'%','Atrasadas':n_late_f})
     st.dataframe(pd.DataFrame(summary),use_container_width=True,hide_index=True)
     st.divider()
     dfp=df[df['Estado'].isin(['En proceso','Pendiente'])]
@@ -731,26 +955,17 @@ elif page == 'Reportes y Exportar':
     if dfp.empty: st.success('Todas completadas.')
     else: st.dataframe(dfp,use_container_width=True,hide_index=True)
     st.divider()
-    # Exportar documentos incluyendo extras
     doc_rows = []
     for d in all_docs():
-        doc_rows.append({'Tipo':'Documento','Cod. Original':d['code'],
-                         'Cod. SGC':get_custom_code(d['code']),
-                         'Nombre':d['name'],'Fase':d['phase'],
-                         'Ref. Normativa':d.get('chapter','-'),
-                         'Tipo doc':d.get('type','-'),
-                         'Estado':get_doc_status(d['code']),
-                         'Extra': 'Si' if d.get('extra') else 'No',
-                         'Observacion':d.get('obs','')})
+        doc_rows.append({'Tipo':'Documento','Cod. Original':d['code'],'Cod. SGC':get_custom_code(d['code']),
+                         'Nombre':d['name'],'Fase':d['phase'],'Ref. Normativa':d.get('chapter','-'),
+                         'Tipo doc':d.get('type','-'),'Estado':get_doc_status(d['code']),
+                         'Extra':'Si' if d.get('extra') else 'No','Observacion':d.get('obs','')})
     for d in all_fmts():
-        doc_rows.append({'Tipo':'Formato','Cod. Original':d['code'],
-                         'Cod. SGC':get_custom_code(d['code']),
-                         'Nombre':d['name'],'Fase':d['phase'],
-                         'Ref. Normativa':d.get('chapter','-'),
-                         'Tipo doc':d.get('type','-'),
-                         'Estado':get_doc_status(d['code']),
-                         'Extra': 'Si' if d.get('extra') else 'No',
-                         'Observacion':d.get('obs','')})
+        doc_rows.append({'Tipo':'Formato','Cod. Original':d['code'],'Cod. SGC':get_custom_code(d['code']),
+                         'Nombre':d['name'],'Fase':d['phase'],'Ref. Normativa':d.get('chapter','-'),
+                         'Tipo doc':d.get('type','-'),'Estado':get_doc_status(d['code']),
+                         'Extra':'Si' if d.get('extra') else 'No','Observacion':d.get('obs','')})
     df_docs = pd.DataFrame(doc_rows)
     c1e, c2e = st.columns(2)
     with c1e:
@@ -764,8 +979,27 @@ elif page == 'Reportes y Exportar':
             file_name='SGI_Documentos_'+datetime.now().strftime('%Y%m%d')+'.csv',
             mime='text/csv', use_container_width=True)
 
+# ============================================================
+# CONFIGURACION
+# ============================================================
 elif page == 'Configuracion':
     st.title('Configuracion'); st.divider()
+    # Fecha de inicio del proyecto
+    st.markdown('### Fecha de inicio del proyecto')
+    st.caption('Esta fecha es la base para calcular el Gantt y las alertas de atraso. '
+               'Corresponde al dia en que se formalizó el inicio de la implementación.')
+    raw_start = st.session_state.state.get('project_start_date', '')
+    try:    cur_start = date.fromisoformat(raw_start) if raw_start else None
+    except: cur_start = None
+    new_start = st.date_input('Fecha de inicio', value=cur_start, key='cfg_start')
+    if st.button('Guardar fecha de inicio', type='primary'):
+        st.session_state.state['project_start_date'] = str(new_start)
+        save_state(st.session_state.state)
+        st.success(f'Fecha de inicio guardada: {new_start.strftime("%d/%m/%Y")}')
+    if cur_start:
+        end_est = cur_start + timedelta(days=30*12)
+        st.caption(f'Inicio: {cur_start.strftime("%d/%m/%Y")} | Fin estimado (Mes 12): {end_est.strftime("%d/%m/%Y")}')
+    st.divider()
     st.markdown('### GitHub Sync')
     if GH_ON:
         st.success('Repo: '+GH_REPO+' | '+GH_PATH+' | '+GH_BRANCH)
@@ -792,9 +1026,7 @@ elif page == 'Configuracion':
         if lb and st.button('Quitar logo'):
             st.session_state.state.pop('logo_b64',None); save_state(st.session_state.state); st.rerun()
     st.divider()
-    # Resumen de documentos adicionales
-    extra_docs = get_extra_docs()
-    extra_fmts = get_extra_fmts()
+    extra_docs = get_extra_docs(); extra_fmts = get_extra_fmts()
     if extra_docs or extra_fmts:
         st.markdown('### Documentos y formatos adicionales')
         st.caption(f'{len(extra_docs)} documentos y {len(extra_fmts)} formatos incorporados al sistema.')
@@ -808,6 +1040,6 @@ elif page == 'Configuracion':
                 st.markdown(f'- `{d["code"]}` — {d["name"]} | {d["phase"]} | agregado: {d.get("added","-")}')
         st.divider()
     n=sum(len(PHASES[pk]['items']) for pk in PHASES)
-    n_docs_total = len(DOCUMENTS) + len(extra_docs)
-    n_fmts_total = len(FORMATS) + len(extra_fmts)
-    st.markdown(f'**Version:** 4.3 | **Actividades:** {n} | **Docs:** {n_docs_total} | **Formatos:** {n_fmts_total}')
+    n_docs_total = len(DOCUMENTS)+len(extra_docs)
+    n_fmts_total = len(FORMATS)+len(extra_fmts)
+    st.markdown(f'**Versión:** 4.4 | **Actividades:** {n} | **Docs:** {n_docs_total} | **Formatos:** {n_fmts_total}')
