@@ -242,6 +242,9 @@ PHASE_PAGES    = {'Fase 1 - Fundamentos': 'Fase 1', 'Fase 2 - Apoyo Estrategico'
                   'Fase 3 - Operacion': 'Fase 3', 'Fase 4 - Evaluacion y Mejora': 'Fase 4'}
 MES_HITO       = {'Fase 1':'Mes 3','Fase 2':'Mes 6','Fase 3':'Mes 9','Fase 4':'Mes 12'}
 
+DOC_TYPES = ['Procedimiento','Manual','Registro','Plan','Declaracion formal','Instrumento',
+             'Informe','Catalogo','Organigrama','Base de datos','Formato estandar','Otro']
+
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -288,6 +291,41 @@ def set_doc_status(code, status):
     st.session_state.state[dkey(code)] = v
     save_state(st.session_state.state)
 
+# --- Documentos y formatos adicionales (almacenados en JSON) ---
+def get_extra_docs():
+    return st.session_state.state.get('extra_documents', [])
+
+def get_extra_fmts():
+    return st.session_state.state.get('extra_formats', [])
+
+def add_extra_doc(entry):
+    st.session_state.state.setdefault('extra_documents', []).append(entry)
+    save_state(st.session_state.state)
+
+def add_extra_fmt(entry):
+    st.session_state.state.setdefault('extra_formats', []).append(entry)
+    save_state(st.session_state.state)
+
+def remove_extra_doc(code):
+    lst = st.session_state.state.get('extra_documents', [])
+    st.session_state.state['extra_documents'] = [d for d in lst if d['code'] != code]
+    save_state(st.session_state.state)
+
+def remove_extra_fmt(code):
+    lst = st.session_state.state.get('extra_formats', [])
+    st.session_state.state['extra_formats'] = [d for d in lst if d['code'] != code]
+    save_state(st.session_state.state)
+
+def all_docs():
+    return DOCUMENTS + get_extra_docs()
+
+def all_fmts():
+    return FORMATS + get_extra_fmts()
+
+def code_exists(code):
+    all_codes = [d['code'] for d in all_docs()] + [d['code'] for d in all_fmts()]
+    return code.strip().upper() in [c.upper() for c in all_codes]
+
 if 'state' not in st.session_state:
     st.session_state.state     = load_state()
     st.session_state.gh_sha    = None
@@ -311,7 +349,7 @@ def overall_progress():
     return ai, ad, ap, (round(ad / ap * 100) if ap > 0 else 0)
 
 def doc_progress():
-    all_d = DOCUMENTS + FORMATS
+    all_d = all_docs() + all_fmts()
     tot   = len(all_d)
     done  = sum(1 for d in all_d if get_doc_status(d['code']) == 'Completo')
     return tot, done, (round(done / tot * 100) if tot > 0 else 0)
@@ -324,6 +362,8 @@ st.markdown('''<style>
        box-shadow:0 2px 8px rgba(0,0,0,.07);margin-bottom:10px}
 .kpct{font-size:2rem;font-weight:800;margin:4px 0}
 .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:.74rem;font-weight:600}
+.extra-badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:.70rem;
+             font-weight:600;background:#FFF3E0;color:#E65100;border:1px solid #FFCC02}
 </style>''', unsafe_allow_html=True)
 
 with st.sidebar:
@@ -404,11 +444,12 @@ if page == 'Dashboard':
     tot_docs, done_docs, pct_docs  = doc_progress()
     phases_done = sum(1 for pk in PHASES if phase_progress(pk)[4] == 100)
     wip_all     = sum(phase_progress(pk)[2] for pk in PHASES)
+    extra_count = len(get_extra_docs()) + len(get_extra_fmts())
     k1,k2,k3,k4 = st.columns(4)
     k1.metric('Avance General', str(pct_all)+'%', str(done_all)+'/'+str(appl_all)+' actividades')
     k2.metric('Documentos', str(pct_docs)+'%', str(done_docs)+'/'+str(tot_docs)+' elaborados')
     k3.metric('Fases completadas', str(phases_done)+'/4')
-    k4.metric('En proceso', wip_all, 'actividades activas')
+    k4.metric('Docs adicionales', extra_count, 'incorporados al sistema')
     st.divider()
     st.markdown('### Progreso por Fase')
     cols = st.columns(4)
@@ -520,36 +561,152 @@ elif page in PHASE_PAGES:
         st.markdown('<hr style="margin:3px 0;opacity:.2">',unsafe_allow_html=True)
 
 elif page == 'Registro Documental':
+    extra_docs = get_extra_docs()
+    extra_fmts = get_extra_fmts()
+    n_docs = len(DOCUMENTS) + len(extra_docs)
+    n_fmts = len(FORMATS) + len(extra_fmts)
     st.title('Registro Documental del SGI')
-    st.markdown('**45 documentos base** y **30 formatos operativos**.')
-    edit_codes=st.checkbox('Editar codigos SGC',value=False)
+    st.markdown(f'**{n_docs} documentos base** y **{n_fmts} formatos operativos**  '
+                f'*(incluye {len(extra_docs)} doc. y {len(extra_fmts)} form. adicionales)*')
+    edit_codes = st.checkbox('Editar codigos SGC', value=False)
     st.divider()
-    t1,t2=st.tabs(['Documentos Base (45)','Formatos (30)'])
-    for tab,items_list,tid in [(t1,DOCUMENTS,'docs'),(t2,FORMATS,'fmts')]:
+
+    tab_labels = [f'Documentos Base ({n_docs})', f'Formatos ({n_fmts})', 'Agregar Documento', 'Agregar Formato']
+    t1, t2, t3, t4 = st.tabs(tab_labels)
+
+    # ---- helper para renderizar lista de documentos ----
+    def render_doc_list(tab, items_list, tid, is_extra=False):
         with tab:
-            pf=st.multiselect('Fase:',['Fase 1','Fase 2','Fase 3','Fase 4'],
-                               default=['Fase 1','Fase 2','Fase 3','Fase 4'],key='df_'+tid)
-            hdr=st.columns([0.5,1.0,0.9,4.1,1.6])
-            for col,lbl in zip(hdr,['**Fase**','**Codigo**','**Ref.**','**Nombre**','**Estado**']): col.markdown(lbl)
-            st.markdown('<hr style="margin:4px 0">',unsafe_allow_html=True)
+            pf = st.multiselect('Fase:', ['Fase 1','Fase 2','Fase 3','Fase 4'],
+                                default=['Fase 1','Fase 2','Fase 3','Fase 4'], key='df_'+tid)
+            hdr = st.columns([0.5,1.1,0.9,3.6,1.6,0.4])
+            for col, lbl in zip(hdr, ['**Fase**','**Codigo**','**Ref.**','**Nombre**','**Estado**','']):
+                col.markdown(lbl)
+            st.markdown('<hr style="margin:4px 0">', unsafe_allow_html=True)
             for d in items_list:
                 if d['phase'] not in pf: continue
-                cur_s=get_doc_status(d['code']); cc=get_custom_code(d['code'])
-                color=PHASES[d['phase']]['color']
-                tag='<span class="tag" style="background:'+color+'20;color:'+color+'">'+d['phase']+'</span>'
-                row=st.columns([0.5,1.0,0.9,4.1,1.6])
-                row[0].markdown(tag,unsafe_allow_html=True)
+                cur_s = get_doc_status(d['code'])
+                cc    = get_custom_code(d['code'])
+                color = PHASES[d['phase']]['color']
+                tag   = '<span class="tag" style="background:'+color+'20;color:'+color+'">'+d['phase']+'</span>'
+                extra_mark = ' <span class="extra-badge">+extra</span>' if d.get('extra') else ''
+                row = st.columns([0.5,1.1,0.9,3.6,1.6,0.4])
+                row[0].markdown(tag, unsafe_allow_html=True)
                 if edit_codes:
-                    nc=row[1].text_input('',value=cc,key='cedit_'+d['code'],label_visibility='collapsed')
-                    if nc!=cc: set_custom_code(d['code'],nc)
+                    nc = row[1].text_input('', value=cc, key='cedit_'+d['code'], label_visibility='collapsed')
+                    if nc != cc: set_custom_code(d['code'], nc)
                 else:
-                    row[1].markdown('**`'+cc+'`**' if cc!=d['code'] else '`'+cc+'`')
-                row[2].markdown('<small>`'+d.get('chapter','-')+'`</small>',unsafe_allow_html=True)
-                row[3].markdown(d['name']+'<br><small style="color:#999">'+d.get('type','-')+'</small>',unsafe_allow_html=True)
-                new_s=row[4].selectbox('',STATUS_OPTIONS,index=STATUS_OPTIONS.index(cur_s),
-                                        key='dsel_'+d['code'],label_visibility='collapsed')
-                if new_s!=cur_s: set_doc_status(d['code'],new_s); st.rerun()
-                st.markdown('<hr style="margin:3px 0;opacity:.18">',unsafe_allow_html=True)
+                    row[1].markdown(('**`'+cc+'`**' if cc != d['code'] else '`'+cc+'`'), unsafe_allow_html=True)
+                row[2].markdown('<small>`'+d.get('chapter','-')+'`</small>', unsafe_allow_html=True)
+                row[3].markdown(d['name']+extra_mark+'<br><small style="color:#999">'+d.get('type','-')+'</small>',
+                                unsafe_allow_html=True)
+                new_s = row[4].selectbox('', STATUS_OPTIONS, index=STATUS_OPTIONS.index(cur_s),
+                                         key='dsel_'+d['code'], label_visibility='collapsed')
+                if new_s != cur_s: set_doc_status(d['code'], new_s); st.rerun()
+                if d.get('extra'):
+                    if row[5].button('🗑', key='del_doc_'+d['code'], help='Eliminar documento adicional'):
+                        remove_extra_doc(d['code']); st.rerun()
+                else:
+                    row[5].markdown('')
+                st.markdown('<hr style="margin:3px 0;opacity:.18">', unsafe_allow_html=True)
+
+    render_doc_list(t1, all_docs(), 'docs')
+
+    with t2:
+        pf2 = st.multiselect('Fase:', ['Fase 1','Fase 2','Fase 3','Fase 4'],
+                             default=['Fase 1','Fase 2','Fase 3','Fase 4'], key='df_fmts')
+        hdr2 = st.columns([0.5,1.1,3.8,1.6,0.4])
+        for col, lbl in zip(hdr2, ['**Fase**','**Codigo**','**Nombre**','**Estado**','']):
+            col.markdown(lbl)
+        st.markdown('<hr style="margin:4px 0">', unsafe_allow_html=True)
+        for d in all_fmts():
+            if d['phase'] not in pf2: continue
+            cur_s = get_doc_status(d['code'])
+            cc    = get_custom_code(d['code'])
+            color = PHASES[d['phase']]['color']
+            tag   = '<span class="tag" style="background:'+color+'20;color:'+color+'">'+d['phase']+'</span>'
+            extra_mark = ' <span class="extra-badge">+extra</span>' if d.get('extra') else ''
+            row2 = st.columns([0.5,1.1,3.8,1.6,0.4])
+            row2[0].markdown(tag, unsafe_allow_html=True)
+            if edit_codes:
+                nc2 = row2[1].text_input('', value=cc, key='cedit_'+d['code'], label_visibility='collapsed')
+                if nc2 != cc: set_custom_code(d['code'], nc2)
+            else:
+                row2[1].markdown(('**`'+cc+'`**' if cc != d['code'] else '`'+cc+'`'), unsafe_allow_html=True)
+            row2[2].markdown(d['name']+extra_mark, unsafe_allow_html=True)
+            new_s2 = row2[3].selectbox('', STATUS_OPTIONS, index=STATUS_OPTIONS.index(cur_s),
+                                       key='dsel_'+d['code'], label_visibility='collapsed')
+            if new_s2 != cur_s: set_doc_status(d['code'], new_s2); st.rerun()
+            if d.get('extra'):
+                if row2[4].button('🗑', key='del_fmt_'+d['code'], help='Eliminar formato adicional'):
+                    remove_extra_fmt(d['code']); st.rerun()
+            else:
+                row2[4].markdown('')
+            st.markdown('<hr style="margin:3px 0;opacity:.18">', unsafe_allow_html=True)
+
+    # ---- Tab Agregar Documento ----
+    with t3:
+        st.markdown('### Agregar documento adicional al SGI')
+        st.caption('Los documentos agregados aquí se guardan en el JSON del sistema y se muestran '
+                   'en la lista principal marcados con la etiqueta **+extra**.')
+        st.divider()
+        with st.form('form_add_doc', clear_on_submit=True):
+            fa1, fa2 = st.columns(2)
+            new_code  = fa1.text_input('Código del documento *', placeholder='Ej: DOC-46 o IIAD-PRC-001')
+            new_phase = fa2.selectbox('Fase de implementación *', ['Fase 1','Fase 2','Fase 3','Fase 4'])
+            new_name  = st.text_input('Nombre del documento *', placeholder='Ej: Protocolo gestión de muestras')
+            fb1, fb2 = st.columns(2)
+            new_chap  = fb1.text_input('Referencia normativa', placeholder='Ej: S7.5  /  S8.1  /  ISO17034-S5')
+            new_type  = fb2.selectbox('Tipo de documento', DOC_TYPES)
+            new_obs   = st.text_area('Justificación / Observación', height=70,
+                                     placeholder='Ej: Requerido por ISO 17034 para trazabilidad de materiales de referencia')
+            submitted = st.form_submit_button('Agregar documento', type='primary', use_container_width=True)
+            if submitted:
+                code_clean = new_code.strip().upper()
+                if not code_clean or not new_name.strip():
+                    st.error('El código y el nombre son obligatorios.')
+                elif code_exists(code_clean):
+                    st.error(f'El código **{code_clean}** ya existe en el sistema. Usa uno diferente.')
+                else:
+                    entry = {'code': code_clean, 'name': new_name.strip(), 'phase': new_phase,
+                             'chapter': new_chap.strip(), 'type': new_type,
+                             'obs': new_obs.strip(), 'extra': True,
+                             'added': datetime.now().strftime('%Y-%m-%d %H:%M')}
+                    add_extra_doc(entry)
+                    st.success(f'✅ Documento **{code_clean}** agregado correctamente a {new_phase}.')
+                    st.rerun()
+
+    # ---- Tab Agregar Formato ----
+    with t4:
+        st.markdown('### Agregar formato operativo adicional')
+        st.caption('Los formatos agregados aquí se guardan en el JSON del sistema y se muestran '
+                   'en la lista de formatos marcados con la etiqueta **+extra**.')
+        st.divider()
+        with st.form('form_add_fmt', clear_on_submit=True):
+            fc1, fc2 = st.columns(2)
+            new_fcode = fc1.text_input('Código del formato *', placeholder='Ej: FTO-31 o IIAD-FTO-001')
+            new_fphase= fc2.selectbox('Fase de implementación *', ['Fase 1','Fase 2','Fase 3','Fase 4'])
+            new_fname = st.text_input('Nombre del formato *', placeholder='Ej: Registro cadena de custodia')
+            fd1, fd2 = st.columns(2)
+            new_fchap = fd1.text_input('Referencia normativa', placeholder='Ej: S7.5  /  ISO17043-S5')
+            new_ftype = fd2.selectbox('Tipo', ['Formato','Plantilla','Registro','Acta','Ficha','Protocolo','Otro'])
+            new_fobs  = st.text_area('Justificación / Observación', height=70,
+                                     placeholder='Ej: Requerido por ISO 17043 para control de muestras de ensayo')
+            fsubmitted = st.form_submit_button('Agregar formato', type='primary', use_container_width=True)
+            if fsubmitted:
+                fcode_clean = new_fcode.strip().upper()
+                if not fcode_clean or not new_fname.strip():
+                    st.error('El código y el nombre son obligatorios.')
+                elif code_exists(fcode_clean):
+                    st.error(f'El código **{fcode_clean}** ya existe en el sistema. Usa uno diferente.')
+                else:
+                    fentry = {'code': fcode_clean, 'name': new_fname.strip(), 'phase': new_fphase,
+                              'chapter': new_fchap.strip(), 'type': new_ftype,
+                              'obs': new_fobs.strip(), 'extra': True,
+                              'added': datetime.now().strftime('%Y-%m-%d %H:%M')}
+                    add_extra_fmt(fentry)
+                    st.success(f'✅ Formato **{fcode_clean}** agregado correctamente a {new_fphase}.')
+                    st.rerun()
 
 elif page == 'Reportes y Exportar':
     st.title('Reportes de Avance'); st.divider()
@@ -574,8 +731,38 @@ elif page == 'Reportes y Exportar':
     if dfp.empty: st.success('Todas completadas.')
     else: st.dataframe(dfp,use_container_width=True,hide_index=True)
     st.divider()
-    st.download_button('Descargar CSV',data=df.to_csv(index=False).encode(),
-        file_name='SGI_'+datetime.now().strftime('%Y%m%d')+'.csv',mime='text/csv',use_container_width=True)
+    # Exportar documentos incluyendo extras
+    doc_rows = []
+    for d in all_docs():
+        doc_rows.append({'Tipo':'Documento','Cod. Original':d['code'],
+                         'Cod. SGC':get_custom_code(d['code']),
+                         'Nombre':d['name'],'Fase':d['phase'],
+                         'Ref. Normativa':d.get('chapter','-'),
+                         'Tipo doc':d.get('type','-'),
+                         'Estado':get_doc_status(d['code']),
+                         'Extra': 'Si' if d.get('extra') else 'No',
+                         'Observacion':d.get('obs','')})
+    for d in all_fmts():
+        doc_rows.append({'Tipo':'Formato','Cod. Original':d['code'],
+                         'Cod. SGC':get_custom_code(d['code']),
+                         'Nombre':d['name'],'Fase':d['phase'],
+                         'Ref. Normativa':d.get('chapter','-'),
+                         'Tipo doc':d.get('type','-'),
+                         'Estado':get_doc_status(d['code']),
+                         'Extra': 'Si' if d.get('extra') else 'No',
+                         'Observacion':d.get('obs','')})
+    df_docs = pd.DataFrame(doc_rows)
+    c1e, c2e = st.columns(2)
+    with c1e:
+        st.download_button('Descargar CSV Actividades',
+            data=df.to_csv(index=False).encode(),
+            file_name='SGI_Actividades_'+datetime.now().strftime('%Y%m%d')+'.csv',
+            mime='text/csv', use_container_width=True)
+    with c2e:
+        st.download_button('Descargar CSV Documentos',
+            data=df_docs.to_csv(index=False).encode(),
+            file_name='SGI_Documentos_'+datetime.now().strftime('%Y%m%d')+'.csv',
+            mime='text/csv', use_container_width=True)
 
 elif page == 'Configuracion':
     st.title('Configuracion'); st.divider()
@@ -605,5 +792,22 @@ elif page == 'Configuracion':
         if lb and st.button('Quitar logo'):
             st.session_state.state.pop('logo_b64',None); save_state(st.session_state.state); st.rerun()
     st.divider()
+    # Resumen de documentos adicionales
+    extra_docs = get_extra_docs()
+    extra_fmts = get_extra_fmts()
+    if extra_docs or extra_fmts:
+        st.markdown('### Documentos y formatos adicionales')
+        st.caption(f'{len(extra_docs)} documentos y {len(extra_fmts)} formatos incorporados al sistema.')
+        if extra_docs:
+            st.markdown('**Documentos extra:**')
+            for d in extra_docs:
+                st.markdown(f'- `{d["code"]}` — {d["name"]} | {d["phase"]} | agregado: {d.get("added","-")}')
+        if extra_fmts:
+            st.markdown('**Formatos extra:**')
+            for d in extra_fmts:
+                st.markdown(f'- `{d["code"]}` — {d["name"]} | {d["phase"]} | agregado: {d.get("added","-")}')
+        st.divider()
     n=sum(len(PHASES[pk]['items']) for pk in PHASES)
-    st.markdown('**Version:** 4.2 | **Actividades:** '+str(n)+' | **Docs:** 45 | **Formatos:** 30')
+    n_docs_total = len(DOCUMENTS) + len(extra_docs)
+    n_fmts_total = len(FORMATS) + len(extra_fmts)
+    st.markdown(f'**Version:** 4.3 | **Actividades:** {n} | **Docs:** {n_docs_total} | **Formatos:** {n_fmts_total}')
